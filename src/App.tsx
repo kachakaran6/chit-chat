@@ -57,29 +57,30 @@ function App() {
 
   const initializePeer = (id: string) => {
     if (peerRef.current) {
-      peerRef.current.destroy();
+      peerRef.current.destroy(); // Destroy any existing peer before creating a new one
     }
 
     const peer = new Peer(id);
+
     peerRef.current = peer;
 
-    peer.on("open", (id) => {
-      setPeerId(id);
+    peer.on("open", (peerId) => {
+      console.log("✅ Peer connection opened with ID:", peerId);
+      setPeerId(peerId);
       setError("");
+
       if (idType === "permanent") {
-        localStorage.setItem(PEER_ID_STORAGE_KEY, id);
+        localStorage.setItem(PEER_ID_STORAGE_KEY, peerId);
       }
     });
 
     peer.on("error", (err) => {
-      if (err.type === "unavailable-id") {
-        setError("This ID is already taken. Please choose another one.");
-      } else {
-        setError("Connection error. Please try again.");
-      }
+      console.error("❌ PeerJS Error:", err);
+      setError(`Connection Error: ${err.type}`);
     });
 
     peer.on("connection", (conn) => {
+      console.log("🔗 Incoming connection from:", conn.peer);
       connRef.current = conn;
       setupConnection(conn);
       setConnected(true);
