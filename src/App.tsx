@@ -92,13 +92,15 @@ function App() {
     }
   }, [isTyping]);
 
-  const setupConnection = (conn: DataConnection) => {
-    conn.on("data", (data: any) => {
-      console.log("Received data:", data); // Debug log
+  const setupConnection = (conn: Peer.DataConnection) => {
+    if (!conn.open) {
+      console.error("Connection is not open yet, waiting...");
+      conn.on("open", () => console.log("Connection established."));
+      return;
+    }
 
-      if (typeof data !== "object" || !data) return; // Ensure data is an object
-
-      if (data.type === "status") {
+    conn.on("data", (data: Message | { type: "status"; typing?: boolean }) => {
+      if ("type" in data && data.type === "status") {
         setPeerStatus((prev) => ({
           ...prev!,
           typing: data.typing ?? false,
@@ -107,24 +109,17 @@ function App() {
         return;
       }
 
-      if ("id" in data && "content" in data) {
-        setMessages((prev) => [...prev, data]);
-
-        // Ensure the connection is still open before sending acknowledgment
-        if (conn.open) {
-          conn.send({ type: "read", messageId: data.id });
-        } else {
-          console.warn("Connection closed before sending read receipt.");
-        }
-      } else {
-        console.error("Invalid message format received:", data);
-      }
+      setMessages((prev) => [...prev, data as Message]);
+      conn.send({ type: "read", messageId: (data as Message).id });
     });
 
     conn.on("close", () => {
+      console.log("Connection closed.");
       setConnected(false);
-      connRef.current = null;
-      setPeerStatus((prev) => (prev ? { ...prev, online: false } : null));
+    });
+
+    conn.on("error", (err) => {
+      console.error("PeerJS Error:", err);
     });
 
     setPeerStatus({
