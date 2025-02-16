@@ -164,7 +164,7 @@ function App() {
     if (!targetId.trim()) return;
 
     console.log("Attempting to connect to:", targetId);
-    const conn = peerRef.current?.connect(targetId);
+    const conn = peerRef.current?.connect(targetId, { reliable: true });
 
     if (conn) {
       console.log("Connection created:", conn);
@@ -172,7 +172,8 @@ function App() {
       setupConnection(conn);
       setConnected(true);
     } else {
-      console.error("Connection failed");
+      console.error("Connection failed, retrying in 3 seconds...");
+      setTimeout(connect, 3000);
     }
   };
 
