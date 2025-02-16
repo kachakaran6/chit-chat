@@ -57,10 +57,21 @@ function App() {
 
   const initializePeer = (id: string) => {
     if (peerRef.current) {
-      peerRef.current.destroy(); // Destroy any existing peer before creating a new one
+      peerRef.current.destroy();
     }
 
-    const peer = new Peer(id);
+    const peer = new Peer(id, {
+      config: {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" }, // Google's STUN server
+          {
+            urls: "turn:openrelay.metered.ca:80", // Replace with a real TURN server
+            username: "openrelayproject",
+            credential: "openrelayproject",
+          },
+        ],
+      },
+    });
 
     peerRef.current = peer;
 
@@ -94,57 +105,45 @@ function App() {
   }, [isTyping]);
 
   const setupConnection = (conn: Peer.DataConnection) => {
+    console.log("🟢 Setting up connection...");
+
     conn.on("open", () => {
-      console.log("✅ Connection established with peer:", conn.peer);
+      console.log(`✅ Connection established with peer: ${conn.peer}`);
       setConnected(true);
-
-      conn.on(
-        "data",
-        (data: Message | { type: "status"; typing?: boolean }) => {
-          if ("type" in data && data.type === "status") {
-            setPeerStatus((prev) => ({
-              ...prev!,
-              typing: data.typing ?? false,
-              lastSeen: Date.now(),
-            }));
-            return;
-          }
-
-          setMessages((prev) => [...prev, data as Message]);
-
-          if (conn.open) {
-            conn.send({ type: "read", messageId: (data as Message).id });
-          } else {
-            console.warn("⚠️ Connection closed before sending read receipt.");
-          }
-        }
-      );
-
-      conn.on("close", () => {
-        console.log("⚠️ Connection closed.");
-        setConnected(false);
-        setPeerStatus((prev) => (prev ? { ...prev, online: false } : null));
-      });
-
-      conn.on("error", (err) => {
-        console.error("❌ PeerJS Error:", err);
-      });
-
-      setPeerStatus({
-        id: conn.peer,
-        online: true,
-        typing: false,
-        lastSeen: Date.now(),
-      });
     });
 
-    // Wait for the connection to open before trying to send data
-    if (!conn.open) {
-      console.warn("⏳ Connection is not open yet. Waiting...");
-      conn.on("open", () => {
-        console.log("✅ Connection opened after waiting.");
-      });
-    }
+    conn.on("data", (data) => {
+      console.log("📩 Received data:", data);
+      if (
+        typeof data === "object" &&
+        "type" in data &&
+        data.type === "status"
+      ) {
+        setPeerStatus((prev) => ({
+          ...prev!,
+          typing: data.typing ?? false,
+          lastSeen: Date.now(),
+        }));
+        return;
+      }
+      setMessages((prev) => [...prev, data as Message]);
+    });
+
+    conn.on("close", () => {
+      console.log("⚠️ Connection closed.");
+      setConnected(false);
+    });
+
+    conn.on("error", (err) => {
+      console.error("❌ PeerJS Connection Error:", err);
+    });
+
+    setPeerStatus({
+      id: conn.peer,
+      online: true,
+      typing: false,
+      lastSeen: Date.now(),
+    });
   };
 
   const handlePermanentIdSubmit = () => {
