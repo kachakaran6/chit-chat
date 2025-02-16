@@ -93,41 +93,57 @@ function App() {
   }, [isTyping]);
 
   const setupConnection = (conn: Peer.DataConnection) => {
+    conn.on("open", () => {
+      console.log("✅ Connection established with peer:", conn.peer);
+      setConnected(true);
+
+      conn.on(
+        "data",
+        (data: Message | { type: "status"; typing?: boolean }) => {
+          if ("type" in data && data.type === "status") {
+            setPeerStatus((prev) => ({
+              ...prev!,
+              typing: data.typing ?? false,
+              lastSeen: Date.now(),
+            }));
+            return;
+          }
+
+          setMessages((prev) => [...prev, data as Message]);
+
+          if (conn.open) {
+            conn.send({ type: "read", messageId: (data as Message).id });
+          } else {
+            console.warn("⚠️ Connection closed before sending read receipt.");
+          }
+        }
+      );
+
+      conn.on("close", () => {
+        console.log("⚠️ Connection closed.");
+        setConnected(false);
+        setPeerStatus((prev) => (prev ? { ...prev, online: false } : null));
+      });
+
+      conn.on("error", (err) => {
+        console.error("❌ PeerJS Error:", err);
+      });
+
+      setPeerStatus({
+        id: conn.peer,
+        online: true,
+        typing: false,
+        lastSeen: Date.now(),
+      });
+    });
+
+    // Wait for the connection to open before trying to send data
     if (!conn.open) {
-      console.error("Connection is not open yet, waiting...");
-      conn.on("open", () => console.log("Connection established."));
-      return;
+      console.warn("⏳ Connection is not open yet. Waiting...");
+      conn.on("open", () => {
+        console.log("✅ Connection opened after waiting.");
+      });
     }
-
-    conn.on("data", (data: Message | { type: "status"; typing?: boolean }) => {
-      if ("type" in data && data.type === "status") {
-        setPeerStatus((prev) => ({
-          ...prev!,
-          typing: data.typing ?? false,
-          lastSeen: Date.now(),
-        }));
-        return;
-      }
-
-      setMessages((prev) => [...prev, data as Message]);
-      conn.send({ type: "read", messageId: (data as Message).id });
-    });
-
-    conn.on("close", () => {
-      console.log("Connection closed.");
-      setConnected(false);
-    });
-
-    conn.on("error", (err) => {
-      console.error("PeerJS Error:", err);
-    });
-
-    setPeerStatus({
-      id: conn.peer,
-      online: true,
-      typing: false,
-      lastSeen: Date.now(),
-    });
   };
 
   const handlePermanentIdSubmit = () => {
