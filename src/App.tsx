@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Peer } from "peerjs";
+import { DataConnection } from "peerjs";
 import { nanoid } from "nanoid";
 import { Message, FileMessage, PeerStatus } from "./types";
 import { ChatMessage } from "./components/ChatMessage";
@@ -26,7 +27,8 @@ function App() {
   const [idType, setIdType] = useState<"temporary" | "permanent">("temporary");
   const [error, setError] = useState<string>("");
   const peerRef = useRef<Peer>();
-  const connRef = useRef<any>();
+  // const connRef = useRef<any>();
+  const connRef = useRef<DataConnection | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeInputRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
@@ -90,19 +92,33 @@ function App() {
     }
   }, [isTyping]);
 
-  const setupConnection = (conn: any) => {
-    conn.on("data", (data: Message | { type: "status"; typing?: boolean }) => {
+  const setupConnection = (conn: DataConnection) => {
+    conn.on("data", (data: any) => {
+      console.log("Received data:", data); // Debug log
+
+      if (typeof data !== "object" || !data) return; // Ensure data is an object
+
       if (data.type === "status") {
         setPeerStatus((prev) => ({
           ...prev!,
-          typing: data.typing,
+          typing: data.typing ?? false,
           lastSeen: Date.now(),
         }));
         return;
       }
 
-      setMessages((prev) => [...prev, data]);
-      conn.send({ type: "read", messageId: data.id });
+      if ("id" in data && "content" in data) {
+        setMessages((prev) => [...prev, data]);
+
+        // Ensure the connection is still open before sending acknowledgment
+        if (conn.open) {
+          conn.send({ type: "read", messageId: data.id });
+        } else {
+          console.warn("Connection closed before sending read receipt.");
+        }
+      } else {
+        console.error("Invalid message format received:", data);
+      }
     });
 
     conn.on("close", () => {
@@ -136,13 +152,24 @@ function App() {
   const connect = () => {
     if (!targetId.trim()) return;
 
+    console.log("Attempting to connect to:", targetId);
     const conn = peerRef.current?.connect(targetId);
+
     if (conn) {
+      console.log("Connection created:", conn);
       connRef.current = conn;
       setupConnection(conn);
       setConnected(true);
+    } else {
+      console.error("Connection failed");
     }
   };
+
+  useEffect(() => {
+    if (peerRef.current) {
+      console.log("Peer ID:", peerRef.current.id);
+    }
+  }, [peerId]);
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputMessage(e.target.value);
@@ -203,10 +230,16 @@ function App() {
       ...extra,
     };
 
+    if (!connRef.current) {
+      console.error("No active connection!");
+      return;
+    }
     connRef.current.send(message);
     setMessages((prev) => [...prev, message]);
     setInputMessage("");
     setShowCodeInput(false);
+
+    console.log("Sending message:", { type, content });
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
