@@ -56,29 +56,42 @@ function App() {
   }, [idType]);
 
   const initializePeer = (id: string) => {
+    // Destroy the previous peer if it exists
     if (peerRef.current) {
-      peerRef.current.destroy(); // Destroy any existing peer before creating a new one
+      console.warn("⚠️ Destroying existing Peer instance...");
+      peerRef.current.destroy();
     }
 
-    const peer = new Peer(id);
+    // Create a new Peer instance
+    const peer = new Peer(id, {
+      host: "your-peerjs-server.com", // Replace with your PeerJS server
+      port: 9000, // Adjust port if needed
+      path: "/peerjs",
+      secure: true, // Set to true if using HTTPS
+    });
 
+    // Store peer reference
     peerRef.current = peer;
 
+    // Event: Peer connection opened
     peer.on("open", (peerId) => {
       console.log("✅ Peer connection opened with ID:", peerId);
       setPeerId(peerId);
       setError("");
 
+      // Store permanent ID if needed
       if (idType === "permanent") {
         localStorage.setItem(PEER_ID_STORAGE_KEY, peerId);
       }
     });
 
+    // Event: Peer error
     peer.on("error", (err) => {
       console.error("❌ PeerJS Error:", err);
       setError(`Connection Error: ${err.type}`);
     });
 
+    // Event: Incoming connection
     peer.on("connection", (conn) => {
       console.log("🔗 Incoming connection from:", conn.peer);
       connRef.current = conn;
@@ -95,7 +108,7 @@ function App() {
 
   const setupConnection = (conn: Peer.DataConnection) => {
     conn.on("open", () => {
-      console.log("✅ Connection established with peer:", conn.peer);
+      console.log("✅ Connection fully opened with:", conn.peer);
       setConnected(true);
 
       conn.on(
@@ -138,7 +151,6 @@ function App() {
       });
     });
 
-    // Wait for the connection to open before trying to send data
     if (!conn.open) {
       console.warn("⏳ Connection is not open yet. Waiting...");
       conn.on("open", () => {
