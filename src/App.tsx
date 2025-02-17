@@ -505,14 +505,17 @@ function App() {
               </div>
             )}
             <div className="h-[500px] overflow-y-auto p-4 bg-white">
-              {filteredMessages.map((msg) => (
-                <ChatMessage
-                  key={msg.id}
-                  message={msg}
-                  isOwn={msg.sender === peerId}
-                  onReaction={handleReaction}
-                />
-              ))}
+              {filteredMessages.map((msg) => {
+                console.log(msg.id);
+                return (
+                  <ChatMessage
+                    key={msg.id}
+                    message={msg}
+                    isOwn={msg.sender === peerId}
+                    onReaction={handleReaction}
+                  />
+                );
+              })}
             </div>
             <div className="border-t p-4">
               {error && (
