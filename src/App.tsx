@@ -1,15 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Peer } from "peerjs";
+import { Peer, DataConnection } from "peerjs";
 import { nanoid } from "nanoid";
 import { Message, FileMessage, PeerStatus } from "./types";
 import { ChatMessage } from "./components/ChatMessage";
 import { Send, Copy, Link, Code, FileUp, Search, Key } from "lucide-react";
 
-// Constants for localStorage keys
 const MESSAGES_STORAGE_KEY = "codeshare_messages";
 const PEER_ID_STORAGE_KEY = "codeshare_peer_id";
 
-// PeerJS configuration for production
 const PEER_CONFIG = {
   config: {
     iceServers: [
@@ -29,9 +27,8 @@ const PEER_CONFIG = {
         credential: "openrelayproject",
       },
     ],
-    sdpSemantics: "unified-plan",
   },
-  debug: 3,
+  debug: 1,
 };
 
 function App() {
@@ -50,13 +47,14 @@ function App() {
   const [idType, setIdType] = useState<"temporary" | "permanent">("temporary");
   const [error, setError] = useState<string>("");
   const peerRef = useRef<Peer>();
-  const connRef = useRef<any>();
+  const connRef = useRef<DataConnection>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeInputRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
   const [showCodeInput, setShowCodeInput] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<string>("");
+  const [isConnectionReady, setIsConnectionReady] = useState(false);
 
   useEffect(() => {
     localStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messages));
@@ -82,10 +80,13 @@ function App() {
     }
 
     setConnectionStatus("Initializing connection...");
+    setIsConnectionReady(false);
+
     const peer = new Peer(id, PEER_CONFIG);
     peerRef.current = peer;
 
     peer.on("open", (id) => {
+      console.log("Peer open with ID:", id);
       setPeerId(id);
       setError("");
       setConnectionStatus("Ready to connect");
@@ -107,28 +108,42 @@ function App() {
         setError("Connection error. Please try again.");
       }
       setConnectionStatus("Connection error");
+      setIsConnectionReady(false);
     });
 
     peer.on("connection", (conn) => {
-      connRef.current = conn;
+      console.log("Incoming connection from:", conn.peer);
       setupConnection(conn);
-      setConnected(true);
-      setConnectionStatus("Connected");
     });
 
     peer.on("disconnected", () => {
       setConnectionStatus("Disconnected. Trying to reconnect...");
+      setIsConnectionReady(false);
       peer.reconnect();
     });
   };
 
-  useEffect(() => {
-    if (isTyping && connRef.current) {
-      connRef.current.send({ type: "status", typing: true });
+  const setupConnection = (conn: DataConnection) => {
+    if (connRef.current) {
+      connRef.current.close();
     }
-  }, [isTyping]);
 
-  const setupConnection = (conn: any) => {
+    connRef.current = conn;
+    setConnectionStatus("Connecting...");
+
+    conn.on("open", () => {
+      console.log("Connection opened with:", conn.peer);
+      setConnected(true);
+      setIsConnectionReady(true);
+      setConnectionStatus("Connected");
+      setPeerStatus({
+        id: conn.peer,
+        online: true,
+        typing: false,
+        lastSeen: Date.now(),
+      });
+    });
+
     conn.on("data", (data: Message | { type: "status"; typing?: boolean }) => {
       if (data.type === "status") {
         setPeerStatus((prev) => ({
@@ -144,25 +159,27 @@ function App() {
     });
 
     conn.on("close", () => {
+      console.log("Connection closed");
       setConnected(false);
-      connRef.current = null;
+      setIsConnectionReady(false);
+      connRef.current = undefined;
       setPeerStatus((prev) => (prev ? { ...prev, online: false } : null));
       setConnectionStatus("Connection closed");
     });
 
-    conn.on("error", (err: Error) => {
+    conn.on("error", (err) => {
       console.error("Connection error:", err);
       setError("Connection error. Please try reconnecting.");
       setConnectionStatus("Connection error");
-    });
-
-    setPeerStatus({
-      id: conn.peer,
-      online: true,
-      typing: false,
-      lastSeen: Date.now(),
+      setIsConnectionReady(false);
     });
   };
+
+  useEffect(() => {
+    if (isTyping && connRef.current && isConnectionReady) {
+      connRef.current.send({ type: "status", typing: true });
+    }
+  }, [isTyping, isConnectionReady]);
 
   const handlePermanentIdSubmit = () => {
     if (!customId.trim()) {
@@ -179,15 +196,15 @@ function App() {
   };
 
   const connect = () => {
-    if (!targetId.trim()) return;
+    if (!targetId.trim() || !peerRef.current) return;
 
     setConnectionStatus("Connecting...");
-    const conn = peerRef.current?.connect(targetId);
-    if (conn) {
-      connRef.current = conn;
-      setupConnection(conn);
-      setConnected(true);
-    }
+    const conn = peerRef.current.connect(targetId, {
+      reliable: true,
+      serialization: "json",
+    });
+
+    setupConnection(conn);
   };
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -200,13 +217,18 @@ function App() {
 
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
-      if (connRef.current) {
+      if (connRef.current && isConnectionReady) {
         connRef.current.send({ type: "status", typing: false });
       }
     }, 1000);
   };
 
   const handleReaction = (messageId: string, emoji: string) => {
+    if (!isConnectionReady) {
+      setError("Connection not ready. Please wait.");
+      return;
+    }
+
     const reaction = {
       emoji,
       user: peerId,
@@ -225,11 +247,15 @@ function App() {
     );
 
     if (connRef.current) {
-      connRef.current.send({
-        type: "reaction",
-        messageId,
-        reaction,
-      });
+      try {
+        connRef.current.send({
+          type: "reaction",
+          messageId,
+          reaction,
+        });
+      } catch (err) {
+        console.error("Error sending reaction:", err);
+      }
     }
   };
 
@@ -238,7 +264,12 @@ function App() {
     content: string,
     extra?: Partial<Message>
   ) => {
-    if (!connRef.current || !content.trim()) return;
+    if (!connRef.current || !content.trim() || !isConnectionReady) {
+      if (!isConnectionReady) {
+        setError("Connection not ready. Please wait.");
+      }
+      return;
+    }
 
     const message: Message = {
       id: nanoid(),
@@ -261,10 +292,14 @@ function App() {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isConnectionReady) {
+      setError("Connection not ready. Please wait.");
+      return;
+    }
+
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Check file size (limit to 5MB)
     if (file.size > 5 * 1024 * 1024) {
       setError("File size must be less than 5MB");
       return;
@@ -285,8 +320,12 @@ function App() {
       };
 
       try {
-        connRef.current?.send(message);
-        setMessages((prev) => [...prev, message]);
+        if (connRef.current && isConnectionReady) {
+          connRef.current.send(message);
+          setMessages((prev) => [...prev, message]);
+        } else {
+          setError("Connection not ready. Please wait.");
+        }
       } catch (err) {
         console.error("Error sending file:", err);
         setError("Failed to send file. Please try again.");
@@ -297,11 +336,7 @@ function App() {
       setError("Error reading file. Please try again.");
     };
 
-    if (file.type.startsWith("image/")) {
-      reader.readAsDataURL(file);
-    } else {
-      reader.readAsDataURL(file);
-    }
+    reader.readAsDataURL(file);
   };
 
   const copyPeerId = () => {
@@ -480,6 +515,9 @@ function App() {
               ))}
             </div>
             <div className="border-t p-4">
+              {error && (
+                <div className="text-red-500 text-sm mb-2">{error}</div>
+              )}
               {showCodeInput ? (
                 <div className="mb-4">
                   <textarea
@@ -502,6 +540,7 @@ function App() {
                         }
                       }}
                       className="px-4 py-2 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600"
+                      disabled={!isConnectionReady}
                     >
                       Send Code
                     </button>
@@ -522,6 +561,7 @@ function App() {
                   <button
                     onClick={() => setShowCodeInput(true)}
                     className="p-2 text-gray-500 hover:bg-gray-100 rounded-full"
+                    disabled={!isConnectionReady}
                   >
                     <Code size={20} />
                   </button>
@@ -534,12 +574,18 @@ function App() {
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     className="p-2 text-gray-500 hover:bg-gray-100 rounded-full"
+                    disabled={!isConnectionReady}
                   >
                     <FileUp size={20} />
                   </button>
                   <button
                     onClick={() => sendMessage("text", inputMessage)}
-                    className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                    className={`p-2 rounded-full ${
+                      isConnectionReady
+                        ? "bg-blue-500 text-white hover:bg-blue-600"
+                        : "bg-gray-300 text-gray-500 cursor-not-allowed"
+                    }`}
+                    disabled={!isConnectionReady}
                   >
                     <Send size={20} />
                   </button>
