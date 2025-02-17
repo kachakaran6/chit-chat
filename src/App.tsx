@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Peer } from "peerjs";
-import { DataConnection } from "peerjs";
 import { nanoid } from "nanoid";
 import { Message, FileMessage, PeerStatus } from "./types";
 import { ChatMessage } from "./components/ChatMessage";
@@ -10,13 +9,37 @@ import { Send, Copy, Link, Code, FileUp, Search, Key } from "lucide-react";
 const MESSAGES_STORAGE_KEY = "codeshare_messages";
 const PEER_ID_STORAGE_KEY = "codeshare_peer_id";
 
+// PeerJS configuration for production
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      { urls: "stun:stun3.l.google.com:19302" },
+      { urls: "stun:stun4.l.google.com:19302" },
+      {
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+    ],
+    sdpSemantics: "unified-plan",
+  },
+  debug: 3,
+};
+
 function App() {
   const [peerId, setPeerId] = useState<string>("");
   const [customId, setCustomId] = useState("");
   const [targetId, setTargetId] = useState<string>("");
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState<Message[]>(() => {
-    // Load messages from localStorage on initial render
     const savedMessages = localStorage.getItem(MESSAGES_STORAGE_KEY);
     return savedMessages ? JSON.parse(savedMessages) : [];
   });
@@ -27,20 +50,18 @@ function App() {
   const [idType, setIdType] = useState<"temporary" | "permanent">("temporary");
   const [error, setError] = useState<string>("");
   const peerRef = useRef<Peer>();
-  // const connRef = useRef<any>();
-  const connRef = useRef<DataConnection | null>(null);
+  const connRef = useRef<any>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeInputRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
   const [showCodeInput, setShowCodeInput] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<string>("");
 
-  // Save messages to localStorage whenever they change
   useEffect(() => {
     localStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messages));
   }, [messages]);
 
-  // Load saved permanent ID from localStorage
   useEffect(() => {
     const savedId = localStorage.getItem(PEER_ID_STORAGE_KEY);
     if (savedId) {
@@ -60,41 +81,44 @@ function App() {
       peerRef.current.destroy();
     }
 
-    const peer = new Peer(id, {
-      config: {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" }, // Google's STUN server
-          {
-            urls: "turn:openrelay.metered.ca:80", // Replace with a real TURN server
-            username: "openrelayproject",
-            credential: "openrelayproject",
-          },
-        ],
-      },
-    });
-
+    setConnectionStatus("Initializing connection...");
+    const peer = new Peer(id, PEER_CONFIG);
     peerRef.current = peer;
 
-    peer.on("open", (peerId) => {
-      console.log("✅ Peer connection opened with ID:", peerId);
-      setPeerId(peerId);
+    peer.on("open", (id) => {
+      setPeerId(id);
       setError("");
-
+      setConnectionStatus("Ready to connect");
       if (idType === "permanent") {
-        localStorage.setItem(PEER_ID_STORAGE_KEY, peerId);
+        localStorage.setItem(PEER_ID_STORAGE_KEY, id);
       }
     });
 
     peer.on("error", (err) => {
-      console.error("❌ PeerJS Error:", err);
-      setError(`Connection Error: ${err.type}`);
+      console.error("PeerJS error:", err);
+      if (err.type === "unavailable-id") {
+        setError("This ID is already taken. Please choose another one.");
+      } else if (err.type === "peer-unavailable") {
+        setError("Peer is not available. Please check the ID and try again.");
+      } else if (err.type === "disconnected") {
+        setError("Connection lost. Trying to reconnect...");
+        peer.reconnect();
+      } else {
+        setError("Connection error. Please try again.");
+      }
+      setConnectionStatus("Connection error");
     });
 
     peer.on("connection", (conn) => {
-      console.log("🔗 Incoming connection from:", conn.peer);
       connRef.current = conn;
       setupConnection(conn);
       setConnected(true);
+      setConnectionStatus("Connected");
+    });
+
+    peer.on("disconnected", () => {
+      setConnectionStatus("Disconnected. Trying to reconnect...");
+      peer.reconnect();
     });
   };
 
@@ -104,38 +128,32 @@ function App() {
     }
   }, [isTyping]);
 
-  const setupConnection = (conn: Peer.DataConnection) => {
-    console.log("🟢 Setting up connection...");
-
-    conn.on("open", () => {
-      console.log(`✅ Connection established with peer: ${conn.peer}`);
-      setConnected(true);
-    });
-
-    conn.on("data", (data) => {
-      console.log("📩 Received data:", data);
-      if (
-        typeof data === "object" &&
-        "type" in data &&
-        data.type === "status"
-      ) {
+  const setupConnection = (conn: any) => {
+    conn.on("data", (data: Message | { type: "status"; typing?: boolean }) => {
+      if (data.type === "status") {
         setPeerStatus((prev) => ({
           ...prev!,
-          typing: data.typing ?? false,
+          typing: data.typing,
           lastSeen: Date.now(),
         }));
         return;
       }
-      setMessages((prev) => [...prev, data as Message]);
+
+      setMessages((prev) => [...prev, data]);
+      conn.send({ type: "read", messageId: data.id });
     });
 
     conn.on("close", () => {
-      console.log("⚠️ Connection closed.");
       setConnected(false);
+      connRef.current = null;
+      setPeerStatus((prev) => (prev ? { ...prev, online: false } : null));
+      setConnectionStatus("Connection closed");
     });
 
-    conn.on("error", (err) => {
-      console.error("❌ PeerJS Connection Error:", err);
+    conn.on("error", (err: Error) => {
+      console.error("Connection error:", err);
+      setError("Connection error. Please try reconnecting.");
+      setConnectionStatus("Connection error");
     });
 
     setPeerStatus({
@@ -163,25 +181,14 @@ function App() {
   const connect = () => {
     if (!targetId.trim()) return;
 
-    console.log("Attempting to connect to:", targetId);
-    const conn = peerRef.current?.connect(targetId, { reliable: true });
-
+    setConnectionStatus("Connecting...");
+    const conn = peerRef.current?.connect(targetId);
     if (conn) {
-      console.log("Connection created:", conn);
       connRef.current = conn;
       setupConnection(conn);
       setConnected(true);
-    } else {
-      console.error("Connection failed, retrying in 3 seconds...");
-      setTimeout(connect, 3000);
     }
   };
-
-  useEffect(() => {
-    if (peerRef.current) {
-      console.log("Peer ID:", peerRef.current.id);
-    }
-  }, [peerId]);
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputMessage(e.target.value);
@@ -242,21 +249,26 @@ function App() {
       ...extra,
     };
 
-    if (!connRef.current) {
-      console.error("No active connection!");
-      return;
+    try {
+      connRef.current.send(message);
+      setMessages((prev) => [...prev, message]);
+      setInputMessage("");
+      setShowCodeInput(false);
+    } catch (err) {
+      console.error("Error sending message:", err);
+      setError("Failed to send message. Please try again.");
     }
-    connRef.current.send(message);
-    setMessages((prev) => [...prev, message]);
-    setInputMessage("");
-    setShowCodeInput(false);
-
-    console.log("Sending message:", { type, content });
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Check file size (limit to 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      setError("File size must be less than 5MB");
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -272,8 +284,17 @@ function App() {
         timestamp: Date.now(),
       };
 
-      connRef.current?.send(message);
-      setMessages((prev) => [...prev, message]);
+      try {
+        connRef.current?.send(message);
+        setMessages((prev) => [...prev, message]);
+      } catch (err) {
+        console.error("Error sending file:", err);
+        setError("Failed to send file. Please try again.");
+      }
+    };
+
+    reader.onerror = () => {
+      setError("Error reading file. Please try again.");
     };
 
     if (file.type.startsWith("image/")) {
@@ -305,7 +326,7 @@ function App() {
       <div className="max-w-3xl mx-auto bg-white rounded-lg shadow-md overflow-hidden">
         {!connected ? (
           <div className="p-6">
-            <h1 className="text-2xl font-bold text-center mb-6">Chit-Chat</h1>
+            <h1 className="text-2xl font-bold text-center mb-6">CodeShare</h1>
 
             <div className="mb-6">
               <div className="flex gap-4 mb-4">
@@ -330,6 +351,12 @@ function App() {
                   Permanent ID
                 </button>
               </div>
+
+              {connectionStatus && (
+                <div className="text-sm text-gray-600 mb-4 text-center">
+                  {connectionStatus}
+                </div>
+              )}
 
               {idType === "permanent" ? (
                 <div className="space-y-4">
@@ -405,7 +432,7 @@ function App() {
           <>
             <div className="bg-white border-b px-4 py-2 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <h1 className="font-semibold">Chit-Chat</h1>
+                <h1 className="font-semibold">CodeShare</h1>
                 {peerStatus && (
                   <div className="text-sm text-gray-500">
                     {peerStatus.typing ? (
